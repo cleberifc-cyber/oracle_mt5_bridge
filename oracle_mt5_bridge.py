@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Oracle MT5 Bridge", version="3.4")
+app = FastAPI(title="Oracle MT5 Bridge", version="3.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +33,34 @@ def to_int(v: Any, default: int = 0) -> int:
         return default
 
 
+def split_text_lines(text: str, max_len: int, max_lines: int) -> List[str]:
+    text = (text or "").strip()
+    if not text:
+        return [""] * max_lines
+
+    words = text.split()
+    lines: List[str] = []
+    current = ""
+
+    for w in words:
+        candidate = w if current == "" else current + " " + w
+        if len(candidate) <= max_len:
+            current = candidate
+        else:
+            lines.append(current)
+            current = w
+            if len(lines) >= max_lines - 1:
+                break
+
+    if current and len(lines) < max_lines:
+        lines.append(current)
+
+    while len(lines) < max_lines:
+        lines.append("")
+
+    return lines[:max_lines]
+
+
 def interpretar_pergunta(
     pergunta: str,
     sinal: str,
@@ -46,36 +74,33 @@ def interpretar_pergunta(
     p = (pergunta or "").strip().lower()
 
     if not p:
-        return "Sem pergunta adicional."
+        return ""
 
     if "compra ou venda" in p:
         return f"Leitura atual favorece {sinal.lower()}."
 
     if "stop" in p:
-        return f"Stop tecnico sugerido em {format_price(stop, digits)}."
+        return f"Stop tecnico em {format_price(stop, digits)}."
 
     if "alvo" in p or "target" in p:
-        return f"Alvo 2:1 projetado em {format_price(alvo, digits)}."
+        return f"Alvo 2:1 em {format_price(alvo, digits)}."
 
     if "entrada" in p:
-        return f"Entrada operacional em {format_price(entrada, digits)}."
+        return f"Entrada em {format_price(entrada, digits)}."
 
     if "vale" in p or "ainda" in p:
-        return f"Operacao segue valida enquanto nao perder o stop em {format_price(stop, digits)}."
+        return f"Operacao valida enquanto nao perder {format_price(stop, digits)}."
 
     if "vies" in p:
-        return f"Vies atual do fluxo: {vies}."
+        return f"Vies atual: {vies}."
 
     if "modo" in p:
-        return f"Modo operacional sugerido: {modo_operacional}."
+        return f"Modo operacional: {modo_operacional}."
 
-    if "ema" in p:
-        return "A leitura considerou EMA20 e EMA200 no contexto de tendencia."
+    if "volume" in p:
+        return "A leitura considerou confirmacao de volume."
 
-    if "vwap" in p:
-        return "A leitura considerou VWAP diaria, semanal e mensal."
-
-    return "Pergunta usada como contexto complementar da leitura."
+    return "Pergunta usada como contexto da leitura."
 
 
 def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
@@ -106,6 +131,49 @@ def contar_pressao(candles: List[Dict[str, Any]]) -> Dict[str, int]:
     return {"bullish": bullish, "bearish": bearish}
 
 
+def classificar_volume(zscore_volume: float, candles_recentes: List[Dict[str, Any]]) -> Dict[str, str]:
+    volumes = [to_float(c.get("tick_volume", 0.0)) for c in candles_recentes if to_float(c.get("tick_volume", 0.0)) > 0]
+
+    if len(volumes) < 3:
+        return {
+            "mercado_status": "Sem leitura",
+            "qualidade_volume": "Baixa",
+            "confirmacao_volume": "Sem dados"
+        }
+
+    media_vol = sum(volumes) / len(volumes)
+    ultimo_vol = volumes[-1]
+
+    if media_vol <= 0:
+        return {
+            "mercado_status": "Sem leitura",
+            "qualidade_volume": "Baixa",
+            "confirmacao_volume": "Sem dados"
+        }
+
+    rel = ultimo_vol / media_vol
+
+    if zscore_volume <= -0.35 or rel < 0.75:
+        return {
+            "mercado_status": "Mercado vazio",
+            "qualidade_volume": "Fraca",
+            "confirmacao_volume": "Volume nao confirma"
+        }
+
+    if -0.35 < zscore_volume < 0.20:
+        return {
+            "mercado_status": "Mercado moderado",
+            "qualidade_volume": "Media",
+            "confirmacao_volume": "Volume parcial"
+        }
+
+    return {
+        "mercado_status": "Mercado ativo",
+        "qualidade_volume": "Boa",
+        "confirmacao_volume": "Volume confirma"
+    }
+
+
 def classificar_fluxo(
     preco: float,
     indicadores: Dict[str, float],
@@ -113,7 +181,6 @@ def classificar_fluxo(
 ) -> Dict[str, Any]:
     ema20 = indicadores["ema20"]
     ema200 = indicadores["ema200"]
-    atr = indicadores["atr"]
     vwap_d = indicadores["vwap_diaria"]
     vwap_w = indicadores["vwap_semanal"]
     vwap_m = indicadores["vwap_mensal"]
@@ -122,6 +189,8 @@ def classificar_fluxo(
     pressao = contar_pressao(candles_recentes)
     bullish = pressao["bullish"]
     bearish = pressao["bearish"]
+
+    volume_info = classificar_volume(zscore, candles_recentes)
 
     score_compra = 0
     score_venda = 0
@@ -163,13 +232,6 @@ def classificar_fluxo(
         score_venda += 1
         fatores_venda.append("preco abaixo VWAP mensal")
 
-    if zscore > 0.20:
-        score_compra += 1
-        fatores_compra.append("zscore volume positivo")
-    elif zscore < -0.20:
-        score_venda += 1
-        fatores_venda.append("zscore volume negativo")
-
     if bullish > bearish:
         score_compra += 1
         fatores_compra.append("pressao compradora recente")
@@ -177,46 +239,67 @@ def classificar_fluxo(
         score_venda += 1
         fatores_venda.append("pressao vendedora recente")
 
-    if atr > 0:
-        fatores_base = f"ATR ativo {atr:.2f}"
-    else:
-        fatores_base = "ATR indisponivel"
+    if volume_info["confirmacao_volume"] == "Volume confirma" and zscore > 0.20:
+        score_compra += 1
+        fatores_compra.append("volume confirma")
+    elif volume_info["confirmacao_volume"] == "Volume confirma" and zscore < -0.20:
+        score_venda += 1
+        fatores_venda.append("volume confirma")
+    elif volume_info["mercado_status"] == "Mercado vazio":
+        score_compra -= 1
+        score_venda -= 1
 
     if score_compra >= 4 and score_compra > score_venda:
-        confianca = min(92, 64 + score_compra * 4)
+        confianca_num = min(90, 62 + score_compra * 4)
+        if volume_info["mercado_status"] == "Mercado vazio":
+            confianca_num = max(54, confianca_num - 15)
+        elif volume_info["qualidade_volume"] == "Media":
+            confianca_num = max(58, confianca_num - 6)
+
         return {
             "sinal": "COMPRA",
             "tipo_cenario": "COMPRA INSTITUCIONAL",
-            "confianca": f"{confianca}%",
+            "confianca": f"{confianca_num}%",
             "vies": "Comprador",
             "modo_operacional": "Pullback comprador",
             "comentario_base": "Confluencia compradora detectada com sustentacao estrutural.",
             "fatores": fatores_compra[:6],
-            "fatores_base": fatores_base,
+            "mercado_status": volume_info["mercado_status"],
+            "qualidade_volume": volume_info["qualidade_volume"],
+            "confirmacao_volume": volume_info["confirmacao_volume"],
         }
 
     if score_venda >= 4 and score_venda > score_compra:
-        confianca = min(92, 64 + score_venda * 4)
+        confianca_num = min(90, 62 + score_venda * 4)
+        if volume_info["mercado_status"] == "Mercado vazio":
+            confianca_num = max(54, confianca_num - 15)
+        elif volume_info["qualidade_volume"] == "Media":
+            confianca_num = max(58, confianca_num - 6)
+
         return {
             "sinal": "VENDA",
             "tipo_cenario": "VENDA INSTITUCIONAL",
-            "confianca": f"{confianca}%",
+            "confianca": f"{confianca_num}%",
             "vies": "Vendedor",
             "modo_operacional": "Pullback vendedor",
             "comentario_base": "Confluencia vendedora detectada com rejeicao estrutural.",
             "fatores": fatores_venda[:6],
-            "fatores_base": fatores_base,
+            "mercado_status": volume_info["mercado_status"],
+            "qualidade_volume": volume_info["qualidade_volume"],
+            "confirmacao_volume": volume_info["confirmacao_volume"],
         }
 
     return {
         "sinal": "SEM SINAL CLARO",
         "tipo_cenario": "SEM SINAL CLARO",
-        "confianca": "58%",
+        "confianca": "54%",
         "vies": "Neutro",
         "modo_operacional": "Aguardar confirmacao",
-        "comentario_base": "Os fatores atuais ainda nao formam confluencia forte o suficiente.",
+        "comentario_base": "Nao ha confluencia forte suficiente para entrada profissional.",
         "fatores": [],
-        "fatores_base": fatores_base,
+        "mercado_status": volume_info["mercado_status"],
+        "qualidade_volume": volume_info["qualidade_volume"],
+        "confirmacao_volume": volume_info["confirmacao_volume"],
     }
 
 
@@ -270,11 +353,7 @@ def calcular_stop_alvo(
     }
 
 
-def montar_comentario_final(
-    fluxo: Dict[str, Any],
-    indicadores: Dict[str, float],
-    digits: int
-) -> str:
+def montar_comentario_final(fluxo: Dict[str, Any], indicadores: Dict[str, float], digits: int) -> str:
     base = fluxo["comentario_base"]
     fatores = fluxo.get("fatores", [])
 
@@ -328,6 +407,14 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     sinal = fluxo["sinal"]
 
+    comentario = montar_comentario_final(
+        fluxo=fluxo,
+        indicadores=indicadores,
+        digits=digits
+    )
+
+    comentario_linhas = split_text_lines(comentario, 48, 3)
+
     if sinal == "SEM SINAL CLARO":
         return {
             "status": "sucesso",
@@ -339,11 +426,17 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
             "alvo": "",
             "rr": "",
             "confianca": fluxo["confianca"],
-            "comentario": fluxo["comentario_base"],
+            "comentario": comentario,
+            "comentario_l1": comentario_linhas[0],
+            "comentario_l2": comentario_linhas[1],
+            "comentario_l3": comentario_linhas[2],
             "tipo_cenario": fluxo["tipo_cenario"],
             "vies": fluxo["vies"],
             "modo_operacional": fluxo["modo_operacional"],
             "fatores": fluxo["fatores"],
+            "mercado_status": fluxo["mercado_status"],
+            "qualidade_volume": fluxo["qualidade_volume"],
+            "confirmacao_volume": fluxo["confirmacao_volume"],
             "resposta_contextual": ""
         }
 
@@ -357,12 +450,6 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
         sinal=sinal
     )
 
-    comentario = montar_comentario_final(
-        fluxo=fluxo,
-        indicadores=indicadores,
-        digits=digits
-    )
-
     return {
         "status": "sucesso",
         "sinal": sinal,
@@ -374,16 +461,22 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "rr": "2:1",
         "confianca": fluxo["confianca"],
         "comentario": comentario,
+        "comentario_l1": comentario_linhas[0],
+        "comentario_l2": comentario_linhas[1],
+        "comentario_l3": comentario_linhas[2],
         "tipo_cenario": fluxo["tipo_cenario"],
         "vies": fluxo["vies"],
         "modo_operacional": fluxo["modo_operacional"],
-        "fatores": fluxo["fatores"]
+        "fatores": fluxo["fatores"],
+        "mercado_status": fluxo["mercado_status"],
+        "qualidade_volume": fluxo["qualidade_volume"],
+        "confirmacao_volume": fluxo["confirmacao_volume"],
     }
 
 
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.4"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.5"}
 
 
 @app.get("/health")
@@ -424,7 +517,11 @@ async def analisar_mt5_completo(
         modo_operacional=modo_operacional
     )
 
+    contexto_linhas = split_text_lines(resposta_contextual, 48, 2)
+
     resultado["pergunta_usuario"] = (pergunta or "").strip()
     resultado["resposta_contextual"] = resposta_contextual
+    resultado["contexto_l1"] = contexto_linhas[0]
+    resultado["contexto_l2"] = contexto_linhas[1]
 
     return resultado
