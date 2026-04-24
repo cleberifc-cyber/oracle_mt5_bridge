@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.2")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -268,8 +268,8 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     """
 
     try:
-        # Mudamos para o FLASH: Rápido, liberado para todas as regiões e imune ao Erro 404
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # ATUALIZADO: Usando o modelo FLASH com sufixo -latest para garantir o endpoint ativo
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content([system_instruction, chart_image, prompt_usuario])
         
         resposta_texto = response.text.strip()
@@ -294,15 +294,23 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
         return resultado_ia
 
     except Exception as e:
-        # Blindagem contra a API caindo ou retornando erros não mapeados
-        return {"status": "erro", "mensagem": f"A API do Google falhou: {str(e)}"}
+        # BLINDAGEM DE ERRO: Se a chave estiver bloqueada ou sem cota, avisa elegantemente
+        if "404" in str(e) or "quota" in str(e).lower() or "billing" in str(e).lower():
+            msg_erro = "Acesso Bloqueado. Crie uma nova API Key com outra conta Gmail."
+        else:
+            msg_erro = f"Erro no modelo Gemini: {str(e)[:50]}"
+            
+        return {
+            "status": "erro", 
+            "mensagem": msg_erro
+        }
 
 # ===================================================================
 # ENDPOINT PRINCIPAL (ROTEADOR DE MOTORES)
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.2"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.2.1"}
 
 @app.get("/health")
 async def health():
@@ -327,4 +335,4 @@ async def analisar_mt5_completo(
             return analisar_motor_regras(metadata, pergunta or "")
 
     except Exception as e:
-        return {"status": "erro", "mensagem": f"Erro interno na Bridge: {str(e)}"}
+        return {"status": "erro", "mensagem": f"Erro interno na Bridge: {str(e)[:50]}"}
