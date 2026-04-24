@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.1")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -267,7 +267,8 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     Retorne APENAS o JSON válido.
     """
 
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    # CORREÇÃO APLICADA AQUI: Utilizando a string que o endpoint v1beta suporta
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
     response = model.generate_content([system_instruction, chart_image, prompt_usuario])
     
     resposta_texto = response.text.strip()
@@ -296,7 +297,7 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.1"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.1.1"}
 
 @app.get("/health")
 async def health():
@@ -311,7 +312,7 @@ async def analisar_mt5_completo(
 ):
     try:
         image_bytes = await file.read()
-        chart_image = Image.open(io.BytesIO(image_bytes)) # <-- Correção AQUI
+        chart_image = Image.open(io.BytesIO(image_bytes))
         metadata = json.loads(metadata_json)
         
         # Despachante Híbrido
