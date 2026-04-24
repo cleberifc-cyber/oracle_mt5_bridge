@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Oracle MT5 Bridge", version="3.7")
+app = FastAPI(title="Oracle MT5 Bridge", version="3.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,9 +61,6 @@ def split_text_lines(text: str, max_len: int, max_lines: int) -> List[str]:
     return lines[:max_lines]
 
 
-# ===================================================================
-# NOVO MÓDULO: Q&A INTELIGENTE (SIMULAÇÃO DE NLP INSTITUCIONAL)
-# ===================================================================
 def interpretar_pergunta(
     pergunta: str,
     sinal: str,
@@ -82,41 +79,34 @@ def interpretar_pergunta(
     if not p:
         return ""
 
-    # Intenção: Motivo / Por que?
     if any(w in p for w in ["por que", "porque", "motivo", "explicacao", "pq", "razao"]):
         if sinal == "SEM SINAL CLARO":
             return "Nao entramos porque a estrutura atual apresenta ruidos e falta de confluencia institucional."
         fator_txt = ", ".join(fatores[:2]) if fatores else "leitura de fluxo dinamico"
         return f"A decisao baseia-se em: {fator_txt}. Isso gera nossa confianca de {confianca}."
 
-    # Intenção: Risco / Stop / Proteção
     if any(w in p for w in ["risco", "stop", "protecao", "perigo", "seguro"]):
         if sinal == "SEM SINAL CLARO":
             return "O maior risco agora e operar num mercado sem direcao. Fique de fora."
         distancia = abs(entrada - stop)
         return f"Risco controlado. Stop tecnico posicionado em {format_price(stop, digits)}, protegido pela estrutura."
 
-    # Intenção: Alvo / Ganho / Target
-    if any(w in p for w in ["alvo", "target", "lucro", "ganho", "objetivo"]):
+    if any(w in p for w in ["alvo", "target", "lucro", "ganho", "objetivo", "niveis"]):
         if sinal == "SEM SINAL CLARO":
             return "Sem alvo definido pois nao ha operacao ativa recomendada."
-        return f"Projetamos a saida principal na regiao de liquidez em {format_price(alvo, digits)} (Risco/Retorno 2:1)."
+        return f"Alvo dinamico mapeado em {format_price(alvo, digits)}. Buscando zona institucional de liquidez."
 
-    # Intenção: Volume / Força
     if any(w in p for w in ["volume", "forca", "institucional", "players"]):
         return f"O volume atual e classificado como {qualidade_volume.lower()}. Os institucionais atuam em zonas de interesse."
 
-    # Intenção: Tendência / Viés
     if any(w in p for w in ["tendencia", "vies", "direcao"]):
         return f"O fluxo macro favorece o vies {vies.lower()}. Nosso foco atual e: {modo_operacional}."
 
-    # Intenção: Validade da operação (ainda vale?)
     if any(w in p for w in ["vale", "ainda", "entrar agora", "atrasado"]):
         if sinal == "SEM SINAL CLARO":
             return "Aguarde. O momento atual exige paciencia para buscar assimetria."
         return f"Operacao valida enquanto o preco se mantiver do lado correto do nosso limite em {format_price(stop, digits)}."
 
-    # Fallback genérico educado
     return f"A IA considerou o seu contexto. Sinal vigente: {sinal} ({confianca} de confianca). Gestao de risco sempre em primeiro lugar."
 
 
@@ -262,7 +252,6 @@ def classificar_fluxo(
 
     volume_info = classificar_volume(zscore, candles_recentes)
 
-    # 1. MÓDULO DE EXAUSTÃO
     sinal_exaustao = verificar_exaustao(candles_recentes, preco, indicadores)
     
     if sinal_exaustao == "VENDA_EXAUSTAO":
@@ -293,7 +282,6 @@ def classificar_fluxo(
             "confirmacao_volume": volume_info["confirmacao_volume"],
         }
 
-    # 2. FLUXO NORMAL DE TENDÊNCIA E PULLBACK
     score_compra = 0
     score_venda = 0
     fatores_compra: List[str] = []
@@ -339,7 +327,6 @@ def classificar_fluxo(
         score_compra -= 1
         score_venda -= 1
 
-    # Classificação Final Institucional
     if score_compra >= 4 and score_compra > score_venda:
         confianca_num = min(92, 65 + score_compra * 4)
         if volume_info["mercado_status"] == "Mercado Vazio":
@@ -390,48 +377,90 @@ def classificar_fluxo(
     }
 
 
-def calcular_stop_alvo(
+# ===================================================================
+# NOVO MÓDULO 3.8: ALVOS DINÂMICOS E INSTITUCIONAIS
+# ===================================================================
+def calcular_stop_alvo_dinamico(
     preco_entrada: float,
     point: float,
     digits: int,
     candles_fechados: List[Dict[str, Any]],
-    sinal: str
+    sinal: str,
+    indicadores: Dict[str, float],
+    tipo_cenario: str
 ) -> Dict[str, float]:
-    swing = candles_fechados[-6:] if len(candles_fechados) >= 6 else candles_fechados
-
-    if not swing:
-        risco_padrao = max(point * 120, abs(preco_entrada) * 0.001)
-        if sinal == "COMPRA":
-            stop = preco_entrada - risco_padrao
-            alvo = preco_entrada + risco_padrao * 2.0
-        else:
-            stop = preco_entrada + risco_padrao
-            alvo = preco_entrada - risco_padrao * 2.0
-
-        return {
-            "entrada": round(preco_entrada, digits),
-            "stop": round(stop, digits),
-            "alvo": round(alvo, digits),
-        }
-
+    
+    # 1. CÁLCULO DO STOP (Baseado em Estrutura / Swing)
+    swing = candles_fechados[-8:] if len(candles_fechados) >= 8 else candles_fechados
     buffer_preco = max(point * 5, point)
-
+    
     if sinal == "COMPRA":
-        fundo = min(to_float(c["low"]) for c in swing)
+        fundo = min(to_float(c["low"]) for c in swing) if swing else preco_entrada
         stop = fundo - buffer_preco
-        risco = abs(preco_entrada - stop)
-        if risco <= 0:
-            risco = max(point * 120, abs(preco_entrada) * 0.001)
-            stop = preco_entrada - risco
-        alvo = preco_entrada + (risco * 2.0)
     else:
-        topo = max(to_float(c["high"]) for c in swing)
+        topo = max(to_float(c["high"]) for c in swing) if swing else preco_entrada
         stop = topo + buffer_preco
-        risco = abs(stop - preco_entrada)
-        if risco <= 0:
-            risco = max(point * 120, abs(preco_entrada) * 0.001)
-            stop = preco_entrada + risco
-        alvo = preco_entrada - (risco * 2.0)
+
+    risco = abs(preco_entrada - stop)
+    if risco <= 0:
+        risco = max(point * 120, abs(preco_entrada) * 0.001)
+        stop = (preco_entrada - risco) if sinal == "COMPRA" else (preco_entrada + risco)
+
+    # 2. MAPEAMENTO DE NÍVEIS TÉCNICOS E BANDAS DA VWAP
+    niveis_tecnicos = []
+    
+    if indicadores["ema20"] > 0: niveis_tecnicos.append(indicadores["ema20"])
+    if indicadores["ema200"] > 0: niveis_tecnicos.append(indicadores["ema200"])
+    if indicadores["vwap_semanal"] > 0: niveis_tecnicos.append(indicadores["vwap_semanal"])
+    if indicadores["vwap_mensal"] > 0: niveis_tecnicos.append(indicadores["vwap_mensal"])
+    
+    # Adicionando a VWAP Diária e as Bandas Institucionais (Desvios baseados em ATR)
+    if indicadores["vwap_diaria"] > 0:
+        v = indicadores["vwap_diaria"]
+        atr = indicadores.get("atr", 0)
+        if atr <= 0: atr = risco # Fallback
+        
+        niveis_tecnicos.extend([
+            v, 
+            v + (atr * 1.5), v - (atr * 1.5), # Banda 1
+            v + (atr * 3.0), v - (atr * 3.0), # Banda 2
+            v + (atr * 4.5), v - (atr * 4.5)  # Banda 3
+        ])
+
+    # Adicionando liquidez de topos e fundos recentes
+    if swing:
+        niveis_tecnicos.append(max(to_float(c["high"]) for c in swing))
+        niveis_tecnicos.append(min(to_float(c["low"]) for c in swing))
+
+    # 3. SELEÇÃO DO ALVO DINÂMICO
+    alvo = 0.0
+    
+    # Cenário de Exaustão: O imã magnético é a VWAP Diária ou a EMA20
+    if "EXAUSTAO" in tipo_cenario:
+        ancora = indicadores["vwap_diaria"] if indicadores["vwap_diaria"] > 0 else indicadores["ema20"]
+        if ancora > 0:
+            if (sinal == "COMPRA" and ancora > preco_entrada) or (sinal == "VENDA" and ancora < preco_entrada):
+                alvo = ancora
+
+    # Cenário de Tendência (ou se a exaustão falhou no teste acima)
+    if alvo == 0.0:
+        if sinal == "COMPRA":
+            # Filtra níveis acima da entrada que paguem pelo menos 1:1 de risco
+            validos = [n for n in niveis_tecnicos if n > preco_entrada + (risco * 0.9)]
+            if validos:
+                validos.sort() # Ordena do mais próximo para o mais distante
+                alvo = validos[0] # Pega a primeira barreira lógica
+            else:
+                alvo = preco_entrada + (risco * 2.0) # Alvo matemático de segurança
+                
+        elif sinal == "VENDA":
+            # Filtra níveis abaixo da entrada que paguem pelo menos 1:1 de risco
+            validos = [n for n in niveis_tecnicos if n < preco_entrada - (risco * 0.9)]
+            if validos:
+                validos.sort(reverse=True) # Ordena do mais próximo para o mais distante
+                alvo = validos[0] # Pega a primeira barreira lógica
+            else:
+                alvo = preco_entrada - (risco * 2.0) # Alvo matemático de segurança
 
     return {
         "entrada": round(preco_entrada, digits),
@@ -503,12 +532,14 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     preco_entrada = preco_ref_buy if sinal == "COMPRA" else preco_ref_sell
 
-    niveis = calcular_stop_alvo(
+    niveis = calcular_stop_alvo_dinamico(
         preco_entrada=preco_entrada,
         point=point,
         digits=digits,
         candles_fechados=candles_fechados,
-        sinal=sinal
+        sinal=sinal,
+        indicadores=indicadores,
+        tipo_cenario=fluxo["tipo_cenario"]
     )
 
     return {
@@ -519,7 +550,7 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "entrada": format_price(niveis["entrada"], digits),
         "stop": format_price(niveis["stop"], digits),
         "alvo": format_price(niveis["alvo"], digits),
-        "rr": "2:1",
+        "rr": "Dinamico",
         "confianca": fluxo["confianca"],
         "comentario": comentario,
         "comentario_l1": comentario_linhas[0],
@@ -537,7 +568,7 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.7"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.8"}
 
 
 @app.get("/health")
