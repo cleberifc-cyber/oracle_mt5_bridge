@@ -311,7 +311,7 @@ async def analisar_mt5_completo(
 ):
     try:
         image_bytes = await file.read()
-        chart_image = Image.open(io.BytesFile(image_bytes))
+        chart_image = Image.open(io.BytesIO(image_bytes)) # <-- Correção AQUI
         metadata = json.loads(metadata_json)
         
         # Despachante Híbrido
