@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.1.1")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -216,7 +216,7 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
     }
 
 # ===================================================================
-# FUNÇÃO DE APOIO - MOTOR GEMINI 1.5 PRO
+# FUNÇÃO DE APOIO - MOTOR GEMINI 1.5 FLASH (API Google)
 # ===================================================================
 def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: Image.Image) -> Dict[str, Any]:
     if not api_key:
@@ -267,37 +267,42 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     Retorne APENAS o JSON válido.
     """
 
-    # CORREÇÃO APLICADA AQUI: Utilizando a string que o endpoint v1beta suporta
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
-    response = model.generate_content([system_instruction, chart_image, prompt_usuario])
-    
-    resposta_texto = response.text.strip()
-    if resposta_texto.startswith("```"):
-        linhas = resposta_texto.split("\n")
-        if len(linhas) > 2: resposta_texto = "\n".join(linhas[1:-1])
+    try:
+        # Mudamos para o FLASH: Rápido, liberado para todas as regiões e imune ao Erro 404
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content([system_instruction, chart_image, prompt_usuario])
+        
+        resposta_texto = response.text.strip()
+        if resposta_texto.startswith("```"):
+            linhas = resposta_texto.split("\n")
+            if len(linhas) > 2: resposta_texto = "\n".join(linhas[1:-1])
 
-    resultado_ia = json.loads(resposta_texto)
-    
-    if resultado_ia.get("entrada", 0) > 0:
-        resultado_ia["entrada"] = format_price(float(resultado_ia["entrada"]), digits)
-        resultado_ia["stop"] = format_price(float(resultado_ia["stop"]), digits)
-        resultado_ia["alvo"] = format_price(float(resultado_ia["alvo"]), digits)
-    else:
-        resultado_ia["entrada"] = ""
-        resultado_ia["stop"] = ""
-        resultado_ia["alvo"] = ""
+        resultado_ia = json.loads(resposta_texto)
+        
+        if resultado_ia.get("entrada", 0) > 0:
+            resultado_ia["entrada"] = format_price(float(resultado_ia["entrada"]), digits)
+            resultado_ia["stop"] = format_price(float(resultado_ia["stop"]), digits)
+            resultado_ia["alvo"] = format_price(float(resultado_ia["alvo"]), digits)
+        else:
+            resultado_ia["entrada"] = ""
+            resultado_ia["stop"] = ""
+            resultado_ia["alvo"] = ""
 
-    resultado_ia["ativo"] = symbol
-    resultado_ia["timeframe"] = timeframe
+        resultado_ia["ativo"] = symbol
+        resultado_ia["timeframe"] = timeframe
 
-    return resultado_ia
+        return resultado_ia
+
+    except Exception as e:
+        # Blindagem contra a API caindo ou retornando erros não mapeados
+        return {"status": "erro", "mensagem": f"A API do Google falhou: {str(e)}"}
 
 # ===================================================================
 # ENDPOINT PRINCIPAL (ROTEADOR DE MOTORES)
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.1.1"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.2"}
 
 @app.get("/health")
 async def health():
@@ -319,8 +324,7 @@ async def analisar_mt5_completo(
         if motor == "gemini" and api_key:
             return analisar_motor_gemini(metadata, pergunta or "", chart_image)
         else:
-            # Se a chave do Gemini falhar ou se o usuario pedir regras
             return analisar_motor_regras(metadata, pergunta or "")
 
     except Exception as e:
-        return {"status": "erro", "mensagem": f"Erro na Bridge: {str(e)}"}
+        return {"status": "erro", "mensagem": f"Erro interno na Bridge: {str(e)}"}
