@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Oracle MT5 Bridge", version="3.6")
+app = FastAPI(title="Oracle MT5 Bridge", version="3.7")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,6 +61,9 @@ def split_text_lines(text: str, max_len: int, max_lines: int) -> List[str]:
     return lines[:max_lines]
 
 
+# ===================================================================
+# NOVO MÓDULO: Q&A INTELIGENTE (SIMULAÇÃO DE NLP INSTITUCIONAL)
+# ===================================================================
 def interpretar_pergunta(
     pergunta: str,
     sinal: str,
@@ -69,38 +72,52 @@ def interpretar_pergunta(
     alvo: float,
     digits: int,
     vies: str,
-    modo_operacional: str
+    modo_operacional: str,
+    fatores: List[str],
+    confianca: str,
+    qualidade_volume: str
 ) -> str:
     p = (pergunta or "").strip().lower()
 
     if not p:
         return ""
 
-    if "compra ou venda" in p:
-        return f"Leitura atual favorece {sinal.lower()}."
+    # Intenção: Motivo / Por que?
+    if any(w in p for w in ["por que", "porque", "motivo", "explicacao", "pq", "razao"]):
+        if sinal == "SEM SINAL CLARO":
+            return "Nao entramos porque a estrutura atual apresenta ruidos e falta de confluencia institucional."
+        fator_txt = ", ".join(fatores[:2]) if fatores else "leitura de fluxo dinamico"
+        return f"A decisao baseia-se em: {fator_txt}. Isso gera nossa confianca de {confianca}."
 
-    if "stop" in p:
-        return f"Stop tecnico em {format_price(stop, digits)}."
+    # Intenção: Risco / Stop / Proteção
+    if any(w in p for w in ["risco", "stop", "protecao", "perigo", "seguro"]):
+        if sinal == "SEM SINAL CLARO":
+            return "O maior risco agora e operar num mercado sem direcao. Fique de fora."
+        distancia = abs(entrada - stop)
+        return f"Risco controlado. Stop tecnico posicionado em {format_price(stop, digits)}, protegido pela estrutura."
 
-    if "alvo" in p or "target" in p:
-        return f"Alvo 2:1 em {format_price(alvo, digits)}."
+    # Intenção: Alvo / Ganho / Target
+    if any(w in p for w in ["alvo", "target", "lucro", "ganho", "objetivo"]):
+        if sinal == "SEM SINAL CLARO":
+            return "Sem alvo definido pois nao ha operacao ativa recomendada."
+        return f"Projetamos a saida principal na regiao de liquidez em {format_price(alvo, digits)} (Risco/Retorno 2:1)."
 
-    if "entrada" in p:
-        return f"Entrada em {format_price(entrada, digits)}."
+    # Intenção: Volume / Força
+    if any(w in p for w in ["volume", "forca", "institucional", "players"]):
+        return f"O volume atual e classificado como {qualidade_volume.lower()}. Os institucionais atuam em zonas de interesse."
 
-    if "vale" in p or "ainda" in p:
-        return f"Operacao valida enquanto nao perder {format_price(stop, digits)}."
+    # Intenção: Tendência / Viés
+    if any(w in p for w in ["tendencia", "vies", "direcao"]):
+        return f"O fluxo macro favorece o vies {vies.lower()}. Nosso foco atual e: {modo_operacional}."
 
-    if "vies" in p:
-        return f"Vies atual: {vies}."
+    # Intenção: Validade da operação (ainda vale?)
+    if any(w in p for w in ["vale", "ainda", "entrar agora", "atrasado"]):
+        if sinal == "SEM SINAL CLARO":
+            return "Aguarde. O momento atual exige paciencia para buscar assimetria."
+        return f"Operacao valida enquanto o preco se mantiver do lado correto do nosso limite em {format_price(stop, digits)}."
 
-    if "modo" in p:
-        return f"Modo operacional: {modo_operacional}."
-
-    if "volume" in p:
-        return "A leitura considerou confirmacao de volume."
-
-    return "Pergunta usada como contexto da leitura."
+    # Fallback genérico educado
+    return f"A IA considerou o seu contexto. Sinal vigente: {sinal} ({confianca} de confianca). Gestao de risco sempre em primeiro lugar."
 
 
 def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
@@ -155,34 +172,30 @@ def classificar_volume(zscore_volume: float, candles_recentes: List[Dict[str, An
 
     if zscore_volume <= -0.35 or rel < 0.75:
         return {
-            "mercado_status": "Mercado vazio",
+            "mercado_status": "Mercado Vazio",
             "qualidade_volume": "Fraca",
-            "confirmacao_volume": "Volume nao confirma"
+            "confirmacao_volume": "Sem Interesse"
         }
 
     if -0.35 < zscore_volume < 0.20:
         return {
-            "mercado_status": "Mercado moderado",
+            "mercado_status": "Liquidez Normal",
             "qualidade_volume": "Media",
-            "confirmacao_volume": "Volume parcial"
+            "confirmacao_volume": "Parcial"
         }
 
     return {
-        "mercado_status": "Mercado ativo",
-        "qualidade_volume": "Boa",
-        "confirmacao_volume": "Volume confirma"
+        "mercado_status": "Alta Atividade",
+        "qualidade_volume": "Forte",
+        "confirmacao_volume": "Volume Apoia"
     }
 
 
-# ===================================================================
-# NOVO MÓDULO 3.6: DETECÇÃO DE EXAUSTÃO E REVERSÃO À MÉDIA
-# ===================================================================
 def verificar_exaustao(candles_recentes: List[Dict[str, Any]], preco: float, indicadores: Dict[str, float]) -> str:
     atr = indicadores.get("atr", 0.0)
     vwap_d = indicadores.get("vwap_diaria", 0.0)
     ema200 = indicadores.get("ema200", 0.0)
 
-    # Margem de distorção: Considera esticado se o preço estiver a mais de 2.5x o ATR da âncora
     margem_distorcao = (atr * 2.5) if atr > 0 else (preco * 0.002)
 
     if vwap_d == 0 and ema200 == 0:
@@ -199,7 +212,6 @@ def verificar_exaustao(candles_recentes: List[Dict[str, Any]], preco: float, ind
     if not (esticado_topo or esticado_fundo):
         return ""
 
-    # Analisa os últimos 4 candles em busca de rejeição severa ou engolfo reverso
     ultimos = candles_recentes[-4:]
     rejeicao_topo = 0
     rejeicao_fundo = 0
@@ -217,15 +229,12 @@ def verificar_exaustao(candles_recentes: List[Dict[str, Any]], preco: float, ind
         pavio_sup = h - max(o, cl)
         pavio_inf = min(o, cl) - l
 
-        # Rejeição de Topo: Pavio superior enorme OU barra forte de baixa anulando movimento
         if pavio_sup > corpo * 1.5 or (cl < o and corpo > tamanho * 0.6):
             rejeicao_topo += 1
 
-        # Rejeição de Fundo: Pavio inferior enorme OU barra forte de alta anulando movimento
         if pavio_inf > corpo * 1.5 or (cl > o and corpo > tamanho * 0.6):
             rejeicao_fundo += 1
 
-    # Dispara o gatilho se houver pelo menos 2 indícios de rejeição no topo ou fundo esticado
     if esticado_topo and rejeicao_topo >= 2:
         return "VENDA_EXAUSTAO"
     
@@ -253,18 +262,18 @@ def classificar_fluxo(
 
     volume_info = classificar_volume(zscore, candles_recentes)
 
-    # 1. TENTA INTERCEPTAR COM O MÓDULO DE EXAUSTÃO PRIMEIRO (Prioridade Institucional)
+    # 1. MÓDULO DE EXAUSTÃO
     sinal_exaustao = verificar_exaustao(candles_recentes, preco, indicadores)
     
     if sinal_exaustao == "VENDA_EXAUSTAO":
         return {
             "sinal": "VENDA",
-            "tipo_cenario": "REVERSAO A MEDIA",
+            "tipo_cenario": "EXAUSTAO DE TOPO",
             "confianca": "85%",
-            "vies": "Exaustao Compradora",
-            "modo_operacional": "Scalp Contra-Tendencia",
-            "comentario_base": "Distorcao extrema de preco. Rejeicao no topo detectada operando retorno a media.",
-            "fatores": ["Preco esticado > 2.5x ATR", "Candles de rejeicao/engolfo", "Afastamento severo da VWAP"],
+            "vies": "Reversao Baixista",
+            "modo_operacional": "Retorno a Media",
+            "comentario_base": "O ativo subiu de forma agressiva e atingiu exaustao. Os big players estao defendendo o topo (rejeicao). Excelente oportunidade para buscar um scalp vendedor voltando para a VWAP.",
+            "fatores": ["Preco muito esticado", "Absorcao institucional no topo"],
             "mercado_status": volume_info["mercado_status"],
             "qualidade_volume": volume_info["qualidade_volume"],
             "confirmacao_volume": volume_info["confirmacao_volume"],
@@ -273,18 +282,18 @@ def classificar_fluxo(
     if sinal_exaustao == "COMPRA_EXAUSTAO":
         return {
             "sinal": "COMPRA",
-            "tipo_cenario": "REVERSAO A MEDIA",
+            "tipo_cenario": "EXAUSTAO DE FUNDO",
             "confianca": "85%",
-            "vies": "Exaustao Vendedora",
-            "modo_operacional": "Scalp Contra-Tendencia",
-            "comentario_base": "Distorcao extrema de preco. Rejeicao no fundo detectada operando retorno a media.",
-            "fatores": ["Preco esticado > 2.5x ATR", "Candles de rejeicao/engolfo", "Afastamento severo da VWAP"],
+            "vies": "Reversao Altista",
+            "modo_operacional": "Retorno a Media",
+            "comentario_base": "Queda severa gerando desvio padrao extremo. Identificamos forte defesa compradora (absorcao) no fundo. A simetria favorece uma compra de retorno a VWAP.",
+            "fatores": ["Preco subprecificado", "Defesa compradora no fundo"],
             "mercado_status": volume_info["mercado_status"],
             "qualidade_volume": volume_info["qualidade_volume"],
             "confirmacao_volume": volume_info["confirmacao_volume"],
         }
 
-    # 2. FLUXO NORMAL DE TENDÊNCIA E PULLBACK (Se não houver distorção extrema)
+    # 2. FLUXO NORMAL DE TENDÊNCIA E PULLBACK
     score_compra = 0
     score_venda = 0
     fatores_compra: List[str] = []
@@ -292,91 +301,76 @@ def classificar_fluxo(
 
     if ema20 > 0 and preco > ema20:
         score_compra += 1
-        fatores_compra.append("preco acima EMA20")
+        fatores_compra.append("Preco acima da EMA20")
     elif ema20 > 0 and preco < ema20:
         score_venda += 1
-        fatores_venda.append("preco abaixo EMA20")
+        fatores_venda.append("Preco abaixo da EMA20")
 
     if ema20 > 0 and ema200 > 0 and ema20 > ema200:
         score_compra += 1
-        fatores_compra.append("EMA20 acima EMA200")
+        fatores_compra.append("Estrutura macro de Alta")
     elif ema20 > 0 and ema200 > 0 and ema20 < ema200:
         score_venda += 1
-        fatores_venda.append("EMA20 abaixo EMA200")
+        fatores_venda.append("Estrutura macro de Baixa")
 
     if vwap_d > 0 and preco > vwap_d:
         score_compra += 1
-        fatores_compra.append("preco acima VWAP diaria")
+        fatores_compra.append("Sustentacao acima da VWAP")
     elif vwap_d > 0 and preco < vwap_d:
         score_venda += 1
-        fatores_venda.append("preco abaixo VWAP diaria")
-
-    if vwap_w > 0 and preco > vwap_w:
-        score_compra += 1
-        fatores_compra.append("preco acima VWAP semanal")
-    elif vwap_w > 0 and preco < vwap_w:
-        score_venda += 1
-        fatores_venda.append("preco abaixo VWAP semanal")
-
-    if vwap_m > 0 and preco > vwap_m:
-        score_compra += 1
-        fatores_compra.append("preco acima VWAP mensal")
-    elif vwap_m > 0 and preco < vwap_m:
-        score_venda += 1
-        fatores_venda.append("preco abaixo VWAP mensal")
+        fatores_venda.append("Pressao abaixo da VWAP")
 
     if bullish > bearish:
         score_compra += 1
-        fatores_compra.append("pressao compradora recente")
+        fatores_compra.append("Fluxo agressivo de compra")
     elif bearish > bullish:
         score_venda += 1
-        fatores_venda.append("pressao vendedora recente")
+        fatores_venda.append("Fluxo agressivo de venda")
 
-    if volume_info["confirmacao_volume"] == "Volume confirma" and zscore > 0.20:
-        score_compra += 1
-        fatores_compra.append("volume confirma")
-    elif volume_info["confirmacao_volume"] == "Volume confirma" and zscore < -0.20:
-        score_venda += 1
-        fatores_venda.append("volume confirma")
-    elif volume_info["mercado_status"] == "Mercado vazio":
+    if volume_info["qualidade_volume"] in ["Media", "Forte"]:
+        if score_compra > score_venda:
+            score_compra += 1
+            fatores_compra.append("Apoio do volume financeiro")
+        elif score_venda > score_compra:
+            score_venda += 1
+            fatores_venda.append("Apoio do volume financeiro")
+
+    if volume_info["mercado_status"] == "Mercado Vazio":
         score_compra -= 1
         score_venda -= 1
 
+    # Classificação Final Institucional
     if score_compra >= 4 and score_compra > score_venda:
-        confianca_num = min(90, 62 + score_compra * 4)
-        if volume_info["mercado_status"] == "Mercado vazio":
-            confianca_num = max(54, confianca_num - 15)
-        elif volume_info["qualidade_volume"] == "Media":
-            confianca_num = max(58, confianca_num - 6)
+        confianca_num = min(92, 65 + score_compra * 4)
+        if volume_info["mercado_status"] == "Mercado Vazio":
+            confianca_num = max(55, confianca_num - 15)
 
         return {
             "sinal": "COMPRA",
-            "tipo_cenario": "COMPRA INSTITUCIONAL",
+            "tipo_cenario": "ALINHAMENTO COMPRADOR",
             "confianca": f"{confianca_num}%",
-            "vies": "Comprador",
-            "modo_operacional": "Pullback comprador",
-            "comentario_base": "Confluencia compradora detectada com sustentacao estrutural.",
-            "fatores": fatores_compra[:6],
+            "vies": "Forte Alta",
+            "modo_operacional": "Seguimento de Fluxo",
+            "comentario_base": "O preco recuou em zona de liquidez e mostrou defesa. Com a estrutura alinhada a nosso favor, o risco/retorno justifica o posicionamento na compra.",
+            "fatores": fatores_compra[:3],
             "mercado_status": volume_info["mercado_status"],
             "qualidade_volume": volume_info["qualidade_volume"],
             "confirmacao_volume": volume_info["confirmacao_volume"],
         }
 
     if score_venda >= 4 and score_venda > score_compra:
-        confianca_num = min(90, 62 + score_venda * 4)
-        if volume_info["mercado_status"] == "Mercado vazio":
-            confianca_num = max(54, confianca_num - 15)
-        elif volume_info["qualidade_volume"] == "Media":
-            confianca_num = max(58, confianca_num - 6)
+        confianca_num = min(92, 65 + score_venda * 4)
+        if volume_info["mercado_status"] == "Mercado Vazio":
+            confianca_num = max(55, confianca_num - 15)
 
         return {
             "sinal": "VENDA",
-            "tipo_cenario": "VENDA INSTITUCIONAL",
+            "tipo_cenario": "ALINHAMENTO VENDEDOR",
             "confianca": f"{confianca_num}%",
-            "vies": "Vendedor",
-            "modo_operacional": "Pullback vendedor",
-            "comentario_base": "Confluencia vendedora detectada com rejeicao estrutural.",
-            "fatores": fatores_venda[:6],
+            "vies": "Forte Baixa",
+            "modo_operacional": "Seguimento de Fluxo",
+            "comentario_base": "O preco corrigiu na resistencia e atraiu agressao vendedora. Estrutura macro alinhada para baixo. Otima janela para posicionamento na venda.",
+            "fatores": fatores_venda[:3],
             "mercado_status": volume_info["mercado_status"],
             "qualidade_volume": volume_info["qualidade_volume"],
             "confirmacao_volume": volume_info["confirmacao_volume"],
@@ -384,12 +378,12 @@ def classificar_fluxo(
 
     return {
         "sinal": "SEM SINAL CLARO",
-        "tipo_cenario": "SEM SINAL CLARO",
-        "confianca": "54%",
-        "vies": "Neutro",
-        "modo_operacional": "Aguardar confirmacao",
-        "comentario_base": "Nao ha confluencia forte suficiente para entrada profissional.",
-        "fatores": [],
+        "tipo_cenario": "AGUARDAR ALINHAMENTO",
+        "confianca": "50%",
+        "vies": "Indefinido",
+        "modo_operacional": "Preservacao de Capital",
+        "comentario_base": "O mercado apresenta ruidos, falta de direcao clara ou volume insuficiente. Profissionais nao operam no meio do caos. Aguarde a definicao das pontas.",
+        "fatores": ["Cenario conflitante ou consolidado"],
         "mercado_status": volume_info["mercado_status"],
         "qualidade_volume": volume_info["qualidade_volume"],
         "confirmacao_volume": volume_info["confirmacao_volume"],
@@ -446,27 +440,6 @@ def calcular_stop_alvo(
     }
 
 
-def montar_comentario_final(fluxo: Dict[str, Any], indicadores: Dict[str, float], digits: int) -> str:
-    base = fluxo["comentario_base"]
-    fatores = fluxo.get("fatores", [])
-
-    if not fatores:
-        return base
-
-    fatores_txt = ", ".join(fatores[:4])
-
-    partes = []
-    if indicadores["ema20"] > 0:
-        partes.append(f"EMA20 {format_price(indicadores['ema20'], digits)}")
-    if indicadores["ema200"] > 0:
-        partes.append(f"EMA200 {format_price(indicadores['ema200'], digits)}")
-    if indicadores["vwap_diaria"] > 0:
-        partes.append(f"VWAP D {format_price(indicadores['vwap_diaria'], digits)}")
-    partes.append(f"ZVol {indicadores['zscore_volume']:.2f}")
-
-    return f"{base} Fatores: {fatores_txt}. Contexto: {', '.join(partes)}."
-
-
 def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
     symbol = metadata.get("symbol", "ATIVO")
     timeframe = metadata.get("timeframe", "M15")
@@ -499,14 +472,9 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     sinal = fluxo["sinal"]
+    comentario = fluxo["comentario_base"]
 
-    comentario = montar_comentario_final(
-        fluxo=fluxo,
-        indicadores=indicadores,
-        digits=digits
-    )
-
-    comentario_linhas = split_text_lines(comentario, 48, 3)
+    comentario_linhas = split_text_lines(comentario, 45, 3)
 
     if sinal == "SEM SINAL CLARO":
         return {
@@ -569,7 +537,7 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.6"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.7"}
 
 
 @app.get("/health")
@@ -593,24 +561,30 @@ async def analisar_mt5_completo(
 
     digits = to_int(metadata.get("digits", 2), 2)
 
-    entrada = to_float(resultado["entrada"]) if resultado["entrada"] != "" else 0.0
-    stop = to_float(resultado["stop"]) if resultado["stop"] != "" else 0.0
-    alvo = to_float(resultado["alvo"]) if resultado["alvo"] != "" else 0.0
+    entrada = to_float(resultado.get("entrada", 0)) if resultado.get("entrada", "") != "" else 0.0
+    stop = to_float(resultado.get("stop", 0)) if resultado.get("stop", "") != "" else 0.0
+    alvo = to_float(resultado.get("alvo", 0)) if resultado.get("alvo", "") != "" else 0.0
     vies = resultado.get("vies", "Neutro")
-    modo_operacional = resultado.get("modo_operacional", "Aguardar confirmacao")
+    modo_operacional = resultado.get("modo_operacional", "Aguardar")
+    fatores = resultado.get("fatores", [])
+    confianca = resultado.get("confianca", "50%")
+    qualidade_volume = resultado.get("qualidade_volume", "Media")
 
     resposta_contextual = interpretar_pergunta(
         pergunta=pergunta or "",
-        sinal=resultado["sinal"],
+        sinal=resultado.get("sinal", ""),
         entrada=entrada,
         stop=stop,
         alvo=alvo,
         digits=digits,
         vies=vies,
-        modo_operacional=modo_operacional
+        modo_operacional=modo_operacional,
+        fatores=fatores,
+        confianca=confianca,
+        qualidade_volume=qualidade_volume
     )
 
-    contexto_linhas = split_text_lines(resposta_contextual, 48, 2)
+    contexto_linhas = split_text_lines(resposta_contextual, 45, 2)
 
     resultado["pergunta_usuario"] = (pergunta or "").strip()
     resultado["resposta_contextual"] = resposta_contextual
