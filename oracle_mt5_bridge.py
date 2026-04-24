@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Oracle MT5 Bridge", version="3.5")
+app = FastAPI(title="Oracle MT5 Bridge", version="3.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -174,6 +174,67 @@ def classificar_volume(zscore_volume: float, candles_recentes: List[Dict[str, An
     }
 
 
+# ===================================================================
+# NOVO MÓDULO 3.6: DETECÇÃO DE EXAUSTÃO E REVERSÃO À MÉDIA
+# ===================================================================
+def verificar_exaustao(candles_recentes: List[Dict[str, Any]], preco: float, indicadores: Dict[str, float]) -> str:
+    atr = indicadores.get("atr", 0.0)
+    vwap_d = indicadores.get("vwap_diaria", 0.0)
+    ema200 = indicadores.get("ema200", 0.0)
+
+    # Margem de distorção: Considera esticado se o preço estiver a mais de 2.5x o ATR da âncora
+    margem_distorcao = (atr * 2.5) if atr > 0 else (preco * 0.002)
+
+    if vwap_d == 0 and ema200 == 0:
+        return ""
+
+    ancora = vwap_d if vwap_d > 0 else ema200
+
+    distancia_up = preco - ancora
+    distancia_down = ancora - preco
+
+    esticado_topo = distancia_up > margem_distorcao
+    esticado_fundo = distancia_down > margem_distorcao
+
+    if not (esticado_topo or esticado_fundo):
+        return ""
+
+    # Analisa os últimos 4 candles em busca de rejeição severa ou engolfo reverso
+    ultimos = candles_recentes[-4:]
+    rejeicao_topo = 0
+    rejeicao_fundo = 0
+
+    for c in ultimos:
+        o = to_float(c.get("open", 0))
+        h = to_float(c.get("high", 0))
+        l = to_float(c.get("low", 0))
+        cl = to_float(c.get("close", 0))
+        
+        tamanho = h - l
+        if tamanho == 0: continue
+
+        corpo = abs(o - cl)
+        pavio_sup = h - max(o, cl)
+        pavio_inf = min(o, cl) - l
+
+        # Rejeição de Topo: Pavio superior enorme OU barra forte de baixa anulando movimento
+        if pavio_sup > corpo * 1.5 or (cl < o and corpo > tamanho * 0.6):
+            rejeicao_topo += 1
+
+        # Rejeição de Fundo: Pavio inferior enorme OU barra forte de alta anulando movimento
+        if pavio_inf > corpo * 1.5 or (cl > o and corpo > tamanho * 0.6):
+            rejeicao_fundo += 1
+
+    # Dispara o gatilho se houver pelo menos 2 indícios de rejeição no topo ou fundo esticado
+    if esticado_topo and rejeicao_topo >= 2:
+        return "VENDA_EXAUSTAO"
+    
+    if esticado_fundo and rejeicao_fundo >= 2:
+        return "COMPRA_EXAUSTAO"
+
+    return ""
+
+
 def classificar_fluxo(
     preco: float,
     indicadores: Dict[str, float],
@@ -192,6 +253,38 @@ def classificar_fluxo(
 
     volume_info = classificar_volume(zscore, candles_recentes)
 
+    # 1. TENTA INTERCEPTAR COM O MÓDULO DE EXAUSTÃO PRIMEIRO (Prioridade Institucional)
+    sinal_exaustao = verificar_exaustao(candles_recentes, preco, indicadores)
+    
+    if sinal_exaustao == "VENDA_EXAUSTAO":
+        return {
+            "sinal": "VENDA",
+            "tipo_cenario": "REVERSAO A MEDIA",
+            "confianca": "85%",
+            "vies": "Exaustao Compradora",
+            "modo_operacional": "Scalp Contra-Tendencia",
+            "comentario_base": "Distorcao extrema de preco. Rejeicao no topo detectada operando retorno a media.",
+            "fatores": ["Preco esticado > 2.5x ATR", "Candles de rejeicao/engolfo", "Afastamento severo da VWAP"],
+            "mercado_status": volume_info["mercado_status"],
+            "qualidade_volume": volume_info["qualidade_volume"],
+            "confirmacao_volume": volume_info["confirmacao_volume"],
+        }
+    
+    if sinal_exaustao == "COMPRA_EXAUSTAO":
+        return {
+            "sinal": "COMPRA",
+            "tipo_cenario": "REVERSAO A MEDIA",
+            "confianca": "85%",
+            "vies": "Exaustao Vendedora",
+            "modo_operacional": "Scalp Contra-Tendencia",
+            "comentario_base": "Distorcao extrema de preco. Rejeicao no fundo detectada operando retorno a media.",
+            "fatores": ["Preco esticado > 2.5x ATR", "Candles de rejeicao/engolfo", "Afastamento severo da VWAP"],
+            "mercado_status": volume_info["mercado_status"],
+            "qualidade_volume": volume_info["qualidade_volume"],
+            "confirmacao_volume": volume_info["confirmacao_volume"],
+        }
+
+    # 2. FLUXO NORMAL DE TENDÊNCIA E PULLBACK (Se não houver distorção extrema)
     score_compra = 0
     score_venda = 0
     fatores_compra: List[str] = []
@@ -476,7 +569,7 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.5"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.6"}
 
 
 @app.get("/health")
