@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Oracle MT5 Bridge", version="3.2")
+app = FastAPI(title="Oracle MT5 Bridge", version="3.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,34 +33,49 @@ def to_int(v: Any, default: int = 0) -> int:
         return default
 
 
-def interpretar_pergunta(pergunta: str, sinal: str, entrada: float, stop: float, alvo: float, digits: int) -> str:
+def interpretar_pergunta(
+    pergunta: str,
+    sinal: str,
+    entrada: float,
+    stop: float,
+    alvo: float,
+    digits: int,
+    vies: str,
+    modo_operacional: str
+) -> str:
     p = (pergunta or "").strip().lower()
 
     if not p:
-        return ""
+        return "Sem pergunta adicional."
 
     if "compra ou venda" in p:
-        return f"A leitura atual favorece {sinal.lower()}."
+        return f"Leitura atual favorece {sinal.lower()}."
 
     if "stop" in p:
-        return f"O stop protegido sugerido fica em {format_price(stop, digits)}."
+        return f"Stop tecnico sugerido em {format_price(stop, digits)}."
 
     if "alvo" in p or "target" in p:
-        return f"O alvo projetado em 2:1 fica em {format_price(alvo, digits)}."
+        return f"Alvo 2:1 projetado em {format_price(alvo, digits)}."
 
     if "entrada" in p:
-        return f"A entrada sugerida considera o preço atual em {format_price(entrada, digits)}."
+        return f"Entrada operacional em {format_price(entrada, digits)}."
 
-    if "ainda vale" in p or "vale a pena" in p or "vale" in p:
-        return f"A operação continua válida enquanto o preço não perder o nível técnico de stop em {format_price(stop, digits)}."
+    if "vale" in p or "ainda" in p:
+        return f"Operacao segue valida enquanto nao perder o stop em {format_price(stop, digits)}."
+
+    if "vies" in p:
+        return f"Vies atual do fluxo: {vies}."
+
+    if "modo" in p:
+        return f"Modo operacional sugerido: {modo_operacional}."
 
     if "ema" in p:
-        return "A leitura considerou a posição do preço em relação à EMA20 e à EMA200."
+        return "A leitura considerou EMA20 e EMA200 no contexto de tendencia."
 
     if "vwap" in p:
-        return "A leitura considerou a posição do preço em relação à VWAP diária, semanal e mensal."
+        return "A leitura considerou VWAP diaria, semanal e mensal."
 
-    return "A pergunta foi usada como contexto complementar da leitura."
+    return "Pergunta usada como contexto complementar da leitura."
 
 
 def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
@@ -68,6 +83,7 @@ def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
     return {
         "ema20": to_float(ind.get("ema20", 0.0)),
         "ema200": to_float(ind.get("ema200", 0.0)),
+        "atr": to_float(ind.get("atr", 0.0)),
         "vwap_diaria": to_float(ind.get("vwap_diaria", 0.0)),
         "vwap_semanal": to_float(ind.get("vwap_semanal", 0.0)),
         "vwap_mensal": to_float(ind.get("vwap_mensal", 0.0)),
@@ -90,81 +106,127 @@ def contar_pressao(candles: List[Dict[str, Any]]) -> Dict[str, int]:
     return {"bullish": bullish, "bearish": bearish}
 
 
-def classificar_cenario(preco: float, ema20: float, ema200: float, vwap_d: float, zscore: float, candles_recentes: List[Dict[str, Any]]) -> Dict[str, Any]:
+def classificar_fluxo(
+    preco: float,
+    indicadores: Dict[str, float],
+    candles_recentes: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    ema20 = indicadores["ema20"]
+    ema200 = indicadores["ema200"]
+    atr = indicadores["atr"]
+    vwap_d = indicadores["vwap_diaria"]
+    vwap_w = indicadores["vwap_semanal"]
+    vwap_m = indicadores["vwap_mensal"]
+    zscore = indicadores["zscore_volume"]
+
     pressao = contar_pressao(candles_recentes)
     bullish = pressao["bullish"]
     bearish = pressao["bearish"]
 
     score_compra = 0
     score_venda = 0
-    fatores_compra = []
-    fatores_venda = []
+    fatores_compra: List[str] = []
+    fatores_venda: List[str] = []
 
     if ema20 > 0 and preco > ema20:
         score_compra += 1
-        fatores_compra.append("preço acima da EMA20")
+        fatores_compra.append("preco acima EMA20")
     elif ema20 > 0 and preco < ema20:
         score_venda += 1
-        fatores_venda.append("preço abaixo da EMA20")
+        fatores_venda.append("preco abaixo EMA20")
 
     if ema20 > 0 and ema200 > 0 and ema20 > ema200:
         score_compra += 1
-        fatores_compra.append("EMA20 acima da EMA200")
+        fatores_compra.append("EMA20 acima EMA200")
     elif ema20 > 0 and ema200 > 0 and ema20 < ema200:
         score_venda += 1
-        fatores_venda.append("EMA20 abaixo da EMA200")
+        fatores_venda.append("EMA20 abaixo EMA200")
 
     if vwap_d > 0 and preco > vwap_d:
         score_compra += 1
-        fatores_compra.append("preço acima da VWAP diária")
+        fatores_compra.append("preco acima VWAP diaria")
     elif vwap_d > 0 and preco < vwap_d:
         score_venda += 1
-        fatores_venda.append("preço abaixo da VWAP diária")
+        fatores_venda.append("preco abaixo VWAP diaria")
+
+    if vwap_w > 0 and preco > vwap_w:
+        score_compra += 1
+        fatores_compra.append("preco acima VWAP semanal")
+    elif vwap_w > 0 and preco < vwap_w:
+        score_venda += 1
+        fatores_venda.append("preco abaixo VWAP semanal")
+
+    if vwap_m > 0 and preco > vwap_m:
+        score_compra += 1
+        fatores_compra.append("preco acima VWAP mensal")
+    elif vwap_m > 0 and preco < vwap_m:
+        score_venda += 1
+        fatores_venda.append("preco abaixo VWAP mensal")
 
     if zscore > 0.20:
         score_compra += 1
-        fatores_compra.append("z-score de volume positivo")
+        fatores_compra.append("zscore volume positivo")
     elif zscore < -0.20:
         score_venda += 1
-        fatores_venda.append("z-score de volume negativo")
+        fatores_venda.append("zscore volume negativo")
 
     if bullish > bearish:
         score_compra += 1
-        fatores_compra.append("pressão compradora recente")
+        fatores_compra.append("pressao compradora recente")
     elif bearish > bullish:
         score_venda += 1
-        fatores_venda.append("pressão vendedora recente")
+        fatores_venda.append("pressao vendedora recente")
 
-    if score_compra >= 3 and score_compra > score_venda:
-        confianca = min(88, 62 + score_compra * 4)
+    if atr > 0:
+        fatores_base = f"ATR ativo {atr:.2f}"
+    else:
+        fatores_base = "ATR indisponivel"
+
+    if score_compra >= 4 and score_compra > score_venda:
+        confianca = min(92, 64 + score_compra * 4)
         return {
             "sinal": "COMPRA",
+            "tipo_cenario": "COMPRA INSTITUCIONAL",
             "confianca": f"{confianca}%",
-            "comentario_base": "Confluência compradora entre estrutura recente e indicadores de tendência.",
-            "fatores": fatores_compra,
-            "tipo_cenario": "COMPRA INSTITUCIONAL"
+            "vies": "Comprador",
+            "modo_operacional": "Pullback comprador",
+            "comentario_base": "Confluencia compradora detectada com sustentacao estrutural.",
+            "fatores": fatores_compra[:6],
+            "fatores_base": fatores_base,
         }
 
-    if score_venda >= 3 and score_venda > score_compra:
-        confianca = min(88, 62 + score_venda * 4)
+    if score_venda >= 4 and score_venda > score_compra:
+        confianca = min(92, 64 + score_venda * 4)
         return {
             "sinal": "VENDA",
+            "tipo_cenario": "VENDA INSTITUCIONAL",
             "confianca": f"{confianca}%",
-            "comentario_base": "Confluência vendedora entre estrutura recente e indicadores de tendência.",
-            "fatores": fatores_venda,
-            "tipo_cenario": "VENDA INSTITUCIONAL"
+            "vies": "Vendedor",
+            "modo_operacional": "Pullback vendedor",
+            "comentario_base": "Confluencia vendedora detectada com rejeicao estrutural.",
+            "fatores": fatores_venda[:6],
+            "fatores_base": fatores_base,
         }
 
     return {
         "sinal": "SEM SINAL CLARO",
+        "tipo_cenario": "SEM SINAL CLARO",
         "confianca": "58%",
-        "comentario_base": "Os fatores atuais ainda não formam confluência forte o suficiente para uma entrada profissional.",
+        "vies": "Neutro",
+        "modo_operacional": "Aguardar confirmacao",
+        "comentario_base": "Os fatores atuais ainda nao formam confluencia forte o suficiente.",
         "fatores": [],
-        "tipo_cenario": "SEM SINAL CLARO"
+        "fatores_base": fatores_base,
     }
 
 
-def calcular_stop_alvo(symbol: str, timeframe: str, preco_entrada: float, point: float, digits: int, candles_fechados: List[Dict[str, Any]], sinal: str) -> Dict[str, float]:
+def calcular_stop_alvo(
+    preco_entrada: float,
+    point: float,
+    digits: int,
+    candles_fechados: List[Dict[str, Any]],
+    sinal: str
+) -> Dict[str, float]:
     swing = candles_fechados[-6:] if len(candles_fechados) >= 6 else candles_fechados
 
     if not swing:
@@ -208,30 +270,29 @@ def calcular_stop_alvo(symbol: str, timeframe: str, preco_entrada: float, point:
     }
 
 
-def montar_comentario_final(sinal_info: Dict[str, Any], indicadores: Dict[str, float], preco_referencia: float, digits: int) -> str:
-    base = sinal_info["comentario_base"]
-    fatores = sinal_info.get("fatores", [])
+def montar_comentario_final(
+    fluxo: Dict[str, Any],
+    indicadores: Dict[str, float],
+    digits: int
+) -> str:
+    base = fluxo["comentario_base"]
+    fatores = fluxo.get("fatores", [])
 
     if not fatores:
         return base
 
     fatores_txt = ", ".join(fatores[:4])
 
-    ema20 = indicadores["ema20"]
-    ema200 = indicadores["ema200"]
-    vwap_d = indicadores["vwap_diaria"]
-    zscore = indicadores["zscore_volume"]
+    partes = []
+    if indicadores["ema20"] > 0:
+        partes.append(f"EMA20 {format_price(indicadores['ema20'], digits)}")
+    if indicadores["ema200"] > 0:
+        partes.append(f"EMA200 {format_price(indicadores['ema200'], digits)}")
+    if indicadores["vwap_diaria"] > 0:
+        partes.append(f"VWAP D {format_price(indicadores['vwap_diaria'], digits)}")
+    partes.append(f"ZVol {indicadores['zscore_volume']:.2f}")
 
-    detalhes = []
-    if ema20 > 0:
-        detalhes.append(f"EMA20 {format_price(ema20, digits)}")
-    if ema200 > 0:
-        detalhes.append(f"EMA200 {format_price(ema200, digits)}")
-    if vwap_d > 0:
-        detalhes.append(f"VWAP D {format_price(vwap_d, digits)}")
-    detalhes.append(f"Z-Score Vol {zscore:.2f}")
-
-    return f"{base} Fatores: {fatores_txt}. Contexto técnico: {', '.join(detalhes)}."
+    return f"{base} Fatores: {fatores_txt}. Contexto: {', '.join(partes)}."
 
 
 def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,23 +312,21 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     indicadores = obter_indicadores(metadata)
 
-    # última vela tende a estar em formação
     candles_fechados = candles[:-1] if len(candles) >= 2 else candles
     recentes = candles_fechados[-8:] if len(candles_fechados) >= 8 else candles_fechados
 
     ultimo_close = to_float(candles_fechados[-1]["close"])
-    preco_referencia = ask if ask > 0 else ultimo_close
+    preco_ref_buy = ask if ask > 0 else ultimo_close
+    preco_ref_sell = bid if bid > 0 else ultimo_close
+    preco_referencia = preco_ref_buy if preco_ref_buy > 0 else ultimo_close
 
-    sinal_info = classificar_cenario(
+    fluxo = classificar_fluxo(
         preco=preco_referencia,
-        ema20=indicadores["ema20"],
-        ema200=indicadores["ema200"],
-        vwap_d=indicadores["vwap_diaria"],
-        zscore=indicadores["zscore_volume"],
+        indicadores=indicadores,
         candles_recentes=recentes
     )
 
-    sinal = sinal_info["sinal"]
+    sinal = fluxo["sinal"]
 
     if sinal == "SEM SINAL CLARO":
         return {
@@ -279,18 +338,18 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
             "stop": "",
             "alvo": "",
             "rr": "",
-            "confianca": sinal_info["confianca"],
-            "comentario": sinal_info["comentario_base"],
-            "tipo_cenario": sinal_info["tipo_cenario"],
-            "fatores": sinal_info["fatores"],
+            "confianca": fluxo["confianca"],
+            "comentario": fluxo["comentario_base"],
+            "tipo_cenario": fluxo["tipo_cenario"],
+            "vies": fluxo["vies"],
+            "modo_operacional": fluxo["modo_operacional"],
+            "fatores": fluxo["fatores"],
             "resposta_contextual": ""
         }
 
-    preco_entrada = ask if sinal == "COMPRA" and ask > 0 else bid if sinal == "VENDA" and bid > 0 else ultimo_close
+    preco_entrada = preco_ref_buy if sinal == "COMPRA" else preco_ref_sell
 
     niveis = calcular_stop_alvo(
-        symbol=symbol,
-        timeframe=timeframe,
         preco_entrada=preco_entrada,
         point=point,
         digits=digits,
@@ -299,9 +358,8 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     comentario = montar_comentario_final(
-        sinal_info=sinal_info,
+        fluxo=fluxo,
         indicadores=indicadores,
-        preco_referencia=preco_entrada,
         digits=digits
     )
 
@@ -314,16 +372,18 @@ def analisar_candles(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "stop": format_price(niveis["stop"], digits),
         "alvo": format_price(niveis["alvo"], digits),
         "rr": "2:1",
-        "confianca": sinal_info["confianca"],
+        "confianca": fluxo["confianca"],
         "comentario": comentario,
-        "tipo_cenario": sinal_info["tipo_cenario"],
-        "fatores": sinal_info["fatores"]
+        "tipo_cenario": fluxo["tipo_cenario"],
+        "vies": fluxo["vies"],
+        "modo_operacional": fluxo["modo_operacional"],
+        "fatores": fluxo["fatores"]
     }
 
 
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.2"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "3.4"}
 
 
 @app.get("/health")
@@ -337,7 +397,6 @@ async def analisar_mt5_completo(
     metadata_json: str = Form(...),
     pergunta: Optional[str] = Form(default="")
 ):
-    # A imagem já entra no fluxo para futura auditoria e apoio visual
     _ = await file.read()
 
     metadata = json.loads(metadata_json)
@@ -351,6 +410,8 @@ async def analisar_mt5_completo(
     entrada = to_float(resultado["entrada"]) if resultado["entrada"] != "" else 0.0
     stop = to_float(resultado["stop"]) if resultado["stop"] != "" else 0.0
     alvo = to_float(resultado["alvo"]) if resultado["alvo"] != "" else 0.0
+    vies = resultado.get("vies", "Neutro")
+    modo_operacional = resultado.get("modo_operacional", "Aguardar confirmacao")
 
     resposta_contextual = interpretar_pergunta(
         pergunta=pergunta or "",
@@ -358,7 +419,9 @@ async def analisar_mt5_completo(
         entrada=entrada,
         stop=stop,
         alvo=alvo,
-        digits=digits
+        digits=digits,
+        vies=vies,
+        modo_operacional=modo_operacional
     )
 
     resultado["pergunta_usuario"] = (pergunta or "").strip()
