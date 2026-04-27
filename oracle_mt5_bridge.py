@@ -364,8 +364,12 @@ def analisar_motor_claude(metadata: Dict[str, Any], pergunta: str, chart_image: 
     pos_ema20 = "ABAIXO" if ultimo_close < ema20  else "ACIMA" if ema20  > 0 else "DISTANTE"
 
     # Converte PIL Image para base64 para envio via Anthropic API
+    img_reduzida = chart_image.copy()
+    img_reduzida.thumbnail((1024, 1024), Image.LANCZOS)
+    if img_reduzida.mode == "RGBA":
+        img_reduzida = img_reduzida.convert("RGB")
     buffer_img = io.BytesIO()
-    chart_image.save(buffer_img, format="PNG")
+    img_reduzida.save(buffer_img, format="JPEG", quality=85)
     imagem_b64 = base64.b64encode(buffer_img.getvalue()).decode("utf-8")
 
     prompt_completo = f"""Voce e um Engenheiro Quantitativo Senior e Trader Institucional operando MetaTrader 5.
@@ -410,7 +414,7 @@ Responda APENAS com este JSON valido, sem markdown, sem texto adicional:
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": "image/jpeg",
                                 "data": imagem_b64
                             }
                         },
