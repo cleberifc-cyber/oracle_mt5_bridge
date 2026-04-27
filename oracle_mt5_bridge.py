@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.3")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +35,7 @@ def to_int(v: Any, default: int = 0) -> int:
     except: return default
 
 # ===================================================================
-# FUNÇÕES DE APOIO - MOTOR REGRAS PYTHON (QUANT)
+# FUNÇÕES DE APOIO - MOTOR REGRAS E MATEMÁTICA QUANT
 # ===================================================================
 def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
     ind = metadata.get("indicadores", {}) or {}
@@ -170,10 +170,10 @@ def calcular_stop_alvo_dinamico(preco: float, point: float, digits: int, swing: 
 def gerar_resposta_pergunta(pergunta: str, fluxo: Dict[str, Any], niveis: Dict[str, Any], digits: int) -> str:
     p = (pergunta or "").strip().lower()
     if not p: return ""
-    if any(w in p for w in ["por que", "pq", "motivo"]): return f"Decisao baseada em: {fluxo['motivo_curto']}."
-    if any(w in p for w in ["risco", "stop", "perigo"]): return f"Risco travado em {format_price(niveis['stop'], digits)} ({niveis['stop_razao']})."
-    if any(w in p for w in ["alvo", "lucro", "target"]): return f"Projetando alvo em {format_price(niveis['alvo'], digits)} ({niveis['alvo_razao']})."
-    if any(w in p for w in ["volume"]): return f"Leitura de volume: {fluxo['qualidade_volume']} ({fluxo['mercado_status']})."
+    if any(w in p for w in ["por que", "pq", "motivo"]): return f"Decisao baseada em: {fluxo.get('motivo_curto', '')}."
+    if any(w in p for w in ["risco", "stop", "perigo"]): return f"Risco travado em {format_price(niveis.get('stop', 0), digits)}."
+    if any(w in p for w in ["alvo", "lucro", "target"]): return f"Projetando alvo em {format_price(niveis.get('alvo', 0), digits)}."
+    if any(w in p for w in ["volume"]): return f"Leitura de volume: {fluxo.get('qualidade_volume', '')}."
     return "A IA analisou os parametros da sua pergunta junto ao fluxo atual."
 
 def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, Any]:
@@ -187,13 +187,21 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
 
     indicadores = obter_indicadores(metadata)
     candles_validos = candles[:-1] if len(candles) > 1 else candles
-    preco_ref = to_float(metadata.get("ask")) if to_float(metadata.get("ask")) > 0 else to_float(candles_validos[-1]["close"])
+    
+    ask = to_float(metadata.get("ask", 0.0))
+    bid = to_float(metadata.get("bid", 0.0))
+    ultimo_close = to_float(candles_validos[-1]["close"])
+    
+    preco_ref_buy = ask if ask > 0 else ultimo_close
+    preco_ref_sell = bid if bid > 0 else ultimo_close
+    preco_ref = preco_ref_buy # Default base reference
     
     fluxo = classificar_fluxo(preco_ref, indicadores, candles_validos[-8:])
     
     niveis = {"entrada": 0, "stop": 0, "alvo": 0, "stop_razao": "", "alvo_razao": ""}
     if fluxo["sinal"] != "SEM SINAL CLARO":
-        niveis = calcular_stop_alvo_dinamico(preco_ref, point, digits, candles_validos[-8:], fluxo["sinal"], indicadores, fluxo["tipo_cenario"])
+        p_entrada = preco_ref_buy if fluxo["sinal"] == "COMPRA" else preco_ref_sell
+        niveis = calcular_stop_alvo_dinamico(p_entrada, point, digits, candles_validos[-8:], fluxo["sinal"], indicadores, fluxo["tipo_cenario"])
 
     coment1 = f"[ GATILHO ] {fluxo['motivo_curto']}" if fluxo['sinal'] != "SEM SINAL CLARO" else "[ AVISO ] Mercado ruidoso. Fique de fora."
     coment2 = f"[ STOP ] {niveis['stop_razao']}" if fluxo['sinal'] != "SEM SINAL CLARO" else ""
@@ -211,12 +219,12 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
         "vies": fluxo["vies"], "modo_operacional": fluxo["modo_operacional"],
         "mercado_status": fluxo["mercado_status"], "qualidade_volume": fluxo["qualidade_volume"],
         "confirmacao_volume": fluxo["confirmacao_volume"],
-        "comentario_l1": coment1[:60], "comentario_l2": coment2[:60], "comentario_l3": coment3[:60],
-        "contexto_l1": ctx1[:60]
+        "comentario_l1": coment1[:75], "comentario_l2": coment2[:75], "comentario_l3": coment3[:75],
+        "contexto_l1": ctx1[:75]
     }
 
 # ===================================================================
-# FUNÇÃO DE APOIO - MOTOR GEMINI 2.5 FLASH LITE (API Google)
+# FUNÇÃO DE APOIO - MOTOR GEMINI 2.5 FLASH LITE (Com Executor Python)
 # ===================================================================
 def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: Image.Image) -> Dict[str, Any]:
     if not api_key:
@@ -226,19 +234,30 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     symbol = metadata.get("symbol", "ATIVO")
     timeframe = metadata.get("timeframe", "M15")
 
+    # Extraindo precos reais matematicos para forcar a entrada correta
+    candles = metadata.get("candles", [])
+    candles_validos = candles[:-1] if len(candles) > 1 else candles
+    ask = to_float(metadata.get("ask", 0.0))
+    bid = to_float(metadata.get("bid", 0.0))
+    ultimo_close = to_float(candles_validos[-1]["close"]) if candles_validos else 0.0
+    
+    preco_ref_buy = ask if ask > 0 else ultimo_close
+    preco_ref_sell = bid if bid > 0 else ultimo_close
+    point = to_float(metadata.get("point", 0.01))
+    indicadores = obter_indicadores(metadata)
+
+    # O prompt agora exige apenas a leitura de fluxo. A matematica exata é o Python que faz.
     system_instruction = """
     Você é um Engenheiro Quantitativo Sênior e Trader Institucional operando MetaTrader 5.
-    Sua missão é cruzar a imagem do gráfico (Price Action/Rejeições) com os dados técnicos fornecidos no JSON (VWAP, EMA20, EMA200, Z-Score de Volume).
+    Analise a imagem do gráfico e os indicadores fornecidos.
     
     Regras de Ouro:
-    1. Opere com alvos lógicos de liquidez (VWAP, EMA200 ou Topos/Fundos).
+    1. Não tente calcular Entrada, Stop ou Alvo (O Python cuidará disso). Retorne apenas as classificações de mercado.
     2. Entenda EXAUSTÃO: Se o preço está muito esticado da VWAP e deixa pavio longo, favoreça o Retorno à Média.
-    3. Mantenha os textos curtos e impactantes, use as tags solicitadas.
-    4. NUNCA use acentos nas suas respostas de texto.
+    3. NUNCA use acentos nas suas respostas.
     
-    Responda EXATAMENTE neste formato JSON, sem crases markdown:
+    Responda EXATAMENTE neste formato JSON:
     {
-      "status": "sucesso",
       "sinal": "COMPRA", // VENDA ou SEM SINAL CLARO
       "tipo_cenario": "EXAUSTAO DE TOPO", 
       "confianca": "85%",
@@ -247,28 +266,19 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
       "mercado_status": "Alta Atividade",
       "qualidade_volume": "Forte",
       "confirmacao_volume": "Volume Apoia",
-      "entrada": 4720.66, 
-      "stop": 4725.31, 
-      "alvo": 4699.40, 
-      "comentario_l1": "[ GATILHO ] Preco esticado e rejeicao forte no topo",
-      "comentario_l2": "[ STOP ] Protecao acima do pavio de rejeicao", 
-      "comentario_l3": "[ ALVO ] Ima magnetico na VWAP Diaria", 
-      "contexto_l1": "[ INFO ] O volume apoia a reversao por exaustao" 
+      "comentario_l1": "[ GATILHO ] Preco esticado e rejeicao no topo",
+      "contexto_l1": "[ INFO ] Resposta a pergunta do usuario" 
     }
     """
 
     prompt_usuario = f"""
-    Dados Técnicos do MT5:
+    Dados Técnicos:
     {json.dumps(metadata, indent=2)}
 
-    Pergunta do Trader: '{pergunta}'
-    
-    Analise a imagem e os dados. Se for Sem Sinal, deixe entrada/stop/alvo zerados.
-    Retorne APENAS o JSON válido estruturado como instruído.
+    Pergunta: '{pergunta}'
     """
 
     try:
-        # ATUALIZADO: Gemini 2.5 Flash Lite com baixa temperatura para garantir precisão JSON
         model = genai.GenerativeModel(
             model_name='gemini-2.5-flash-lite',
             generation_config={"temperature": 0.1, "response_mime_type": "application/json"}
@@ -281,38 +291,47 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
             if len(linhas) > 2: resposta_texto = "\n".join(linhas[1:-1])
 
         resultado_ia = json.loads(resposta_texto)
+        sinal = resultado_ia.get("sinal", "SEM SINAL CLARO")
         
-        if resultado_ia.get("entrada", 0) > 0:
-            resultado_ia["entrada"] = format_price(float(resultado_ia["entrada"]), digits)
-            resultado_ia["stop"] = format_price(float(resultado_ia["stop"]), digits)
-            resultado_ia["alvo"] = format_price(float(resultado_ia["alvo"]), digits)
+        # MÁGICA: Python assume o controle e faz o cálculo EXATO do Bid/Ask e níveis
+        if sinal in ["COMPRA", "VENDA"]:
+            p_entrada = preco_ref_buy if sinal == "COMPRA" else preco_ref_sell
+            niveis = calcular_stop_alvo_dinamico(
+                p_entrada, point, digits, candles_validos[-8:], 
+                sinal, indicadores, resultado_ia.get("tipo_cenario", "")
+            )
+            
+            resultado_ia["entrada"] = format_price(niveis["entrada"], digits)
+            resultado_ia["stop"] = format_price(niveis["stop"], digits)
+            resultado_ia["alvo"] = format_price(niveis["alvo"], digits)
+            
+            # Adiciona L2 e L3 formatados pela precisão matemática
+            resultado_ia["comentario_l2"] = f"[ STOP ] {niveis['stop_razao']}"
+            resultado_ia["comentario_l3"] = f"[ ALVO ] {niveis['alvo_razao']}"
+            
         else:
             resultado_ia["entrada"] = ""
             resultado_ia["stop"] = ""
             resultado_ia["alvo"] = ""
+            resultado_ia["comentario_l2"] = ""
+            resultado_ia["comentario_l3"] = ""
 
+        resultado_ia["status"] = "sucesso"
         resultado_ia["ativo"] = symbol
         resultado_ia["timeframe"] = timeframe
 
         return resultado_ia
 
     except Exception as e:
-        if "404" in str(e) or "quota" in str(e).lower() or "billing" in str(e).lower():
-            msg_erro = "Acesso Bloqueado. Verifique o faturamento ou crie uma nova API Key."
-        else:
-            msg_erro = f"Erro no modelo Gemini: {str(e)[:50]}"
-            
-        return {
-            "status": "erro", 
-            "mensagem": msg_erro
-        }
+        msg_erro = "Acesso Bloqueado ou erro na IA." if "404" in str(e) else f"Erro no Gemini: {str(e)[:50]}"
+        return {"status": "erro", "mensagem": msg_erro}
 
 # ===================================================================
 # ENDPOINT PRINCIPAL (ROTEADOR DE MOTORES)
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.3"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.4"}
 
 @app.get("/health")
 async def health():
