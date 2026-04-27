@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.2.1")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -216,7 +216,7 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
     }
 
 # ===================================================================
-# FUNÇÃO DE APOIO - MOTOR GEMINI 1.5 FLASH (API Google)
+# FUNÇÃO DE APOIO - MOTOR GEMINI 2.5 FLASH LITE (API Google)
 # ===================================================================
 def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: Image.Image) -> Dict[str, Any]:
     if not api_key:
@@ -264,12 +264,15 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     Pergunta do Trader: '{pergunta}'
     
     Analise a imagem e os dados. Se for Sem Sinal, deixe entrada/stop/alvo zerados.
-    Retorne APENAS o JSON válido.
+    Retorne APENAS o JSON válido estruturado como instruído.
     """
 
     try:
-        # ATUALIZADO: Usando o modelo FLASH com sufixo -latest para garantir o endpoint ativo
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # ATUALIZADO: Gemini 2.5 Flash Lite com baixa temperatura para garantir precisão JSON
+        model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash-lite',
+            generation_config={"temperature": 0.1, "response_mime_type": "application/json"}
+        )
         response = model.generate_content([system_instruction, chart_image, prompt_usuario])
         
         resposta_texto = response.text.strip()
@@ -294,9 +297,8 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
         return resultado_ia
 
     except Exception as e:
-        # BLINDAGEM DE ERRO: Se a chave estiver bloqueada ou sem cota, avisa elegantemente
         if "404" in str(e) or "quota" in str(e).lower() or "billing" in str(e).lower():
-            msg_erro = "Acesso Bloqueado. Crie uma nova API Key com outra conta Gmail."
+            msg_erro = "Acesso Bloqueado. Verifique o faturamento ou crie uma nova API Key."
         else:
             msg_erro = f"Erro no modelo Gemini: {str(e)[:50]}"
             
@@ -310,7 +312,7 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.2.1"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.3"}
 
 @app.get("/health")
 async def health():
