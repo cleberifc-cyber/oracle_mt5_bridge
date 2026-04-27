@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-python-multipart
-pillow
+Pillow
 google-generativeai
-pip install anthropic
+python-multipart
+anthropic
