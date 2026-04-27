@@ -13,7 +13,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.4")
+app = FastAPI(title="Oracle MT5 Bridge Hibrida", version="4.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +35,7 @@ def to_int(v: Any, default: int = 0) -> int:
     except: return default
 
 # ===================================================================
-# FUNÇÕES DE APOIO - MOTOR REGRAS E MATEMÁTICA QUANT
+# FUNÇÕES DE APOIO - MOTOR REGRAS PYTHON (QUANT)
 # ===================================================================
 def obter_indicadores(metadata: Dict[str, Any]) -> Dict[str, float]:
     ind = metadata.get("indicadores", {}) or {}
@@ -167,15 +167,6 @@ def calcular_stop_alvo_dinamico(preco: float, point: float, digits: int, swing: 
 
     return {"entrada": round(preco, digits), "stop": round(stop, digits), "alvo": round(alvo, digits), "stop_razao": stop_razao, "alvo_razao": alvo_razao}
 
-def gerar_resposta_pergunta(pergunta: str, fluxo: Dict[str, Any], niveis: Dict[str, Any], digits: int) -> str:
-    p = (pergunta or "").strip().lower()
-    if not p: return ""
-    if any(w in p for w in ["por que", "pq", "motivo"]): return f"Decisao baseada em: {fluxo.get('motivo_curto', '')}."
-    if any(w in p for w in ["risco", "stop", "perigo"]): return f"Risco travado em {format_price(niveis.get('stop', 0), digits)}."
-    if any(w in p for w in ["alvo", "lucro", "target"]): return f"Projetando alvo em {format_price(niveis.get('alvo', 0), digits)}."
-    if any(w in p for w in ["volume"]): return f"Leitura de volume: {fluxo.get('qualidade_volume', '')}."
-    return "A IA analisou os parametros da sua pergunta junto ao fluxo atual."
-
 def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, Any]:
     symbol = metadata.get("symbol", "ATIVO")
     timeframe = metadata.get("timeframe", "M15")
@@ -194,7 +185,7 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
     
     preco_ref_buy = ask if ask > 0 else ultimo_close
     preco_ref_sell = bid if bid > 0 else ultimo_close
-    preco_ref = preco_ref_buy # Default base reference
+    preco_ref = preco_ref_buy 
     
     fluxo = classificar_fluxo(preco_ref, indicadores, candles_validos[-8:])
     
@@ -207,8 +198,7 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
     coment2 = f"[ STOP ] {niveis['stop_razao']}" if fluxo['sinal'] != "SEM SINAL CLARO" else ""
     coment3 = f"[ ALVO ] {niveis['alvo_razao']}" if fluxo['sinal'] != "SEM SINAL CLARO" else ""
     
-    resposta_ia = gerar_resposta_pergunta(pergunta, fluxo, niveis, digits)
-    ctx1 = f"[ INFO ] {resposta_ia}" if resposta_ia else f"[ MERCADO ] {fluxo['mercado_status']}"
+    ctx1 = f"[ INFO ] Resposta baseada na engine Quant" if pergunta else f"[ MERCADO ] {fluxo['mercado_status']}"
 
     return {
         "status": "sucesso", "sinal": fluxo["sinal"], "ativo": symbol, "timeframe": timeframe,
@@ -224,7 +214,7 @@ def analisar_motor_regras(metadata: Dict[str, Any], pergunta: str) -> Dict[str, 
     }
 
 # ===================================================================
-# FUNÇÃO DE APOIO - MOTOR GEMINI 2.5 FLASH LITE (Com Executor Python)
+# FUNÇÃO DE APOIO - MOTOR GEMINI 2.5 FLASH LITE (Com Aterramento de Fatos V2)
 # ===================================================================
 def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: Image.Image) -> Dict[str, Any]:
     if not api_key:
@@ -234,7 +224,6 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     symbol = metadata.get("symbol", "ATIVO")
     timeframe = metadata.get("timeframe", "M15")
 
-    # Extraindo precos reais matematicos para forcar a entrada correta
     candles = metadata.get("candles", [])
     candles_validos = candles[:-1] if len(candles) > 1 else candles
     ask = to_float(metadata.get("ask", 0.0))
@@ -244,38 +233,46 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
     preco_ref_buy = ask if ask > 0 else ultimo_close
     preco_ref_sell = bid if bid > 0 else ultimo_close
     point = to_float(metadata.get("point", 0.01))
-    indicadores = obter_indicadores(metadata)
-
-    # O prompt agora exige apenas a leitura de fluxo. A matematica exata é o Python que faz.
-    system_instruction = """
-    Você é um Engenheiro Quantitativo Sênior e Trader Institucional operando MetaTrader 5.
-    Analise a imagem do gráfico e os indicadores fornecidos.
     
-    Regras de Ouro:
-    1. Não tente calcular Entrada, Stop ou Alvo (O Python cuidará disso). Retorne apenas as classificações de mercado.
-    2. Entenda EXAUSTÃO: Se o preço está muito esticado da VWAP e deixa pavio longo, favoreça o Retorno à Média.
-    3. NUNCA use acentos nas suas respostas.
+    indicadores = obter_indicadores(metadata)
+    vwap_d = indicadores.get("vwap_diaria", 0.0)
+    ema20 = indicadores.get("ema20", 0.0)
+    
+    pos_vwap = "ABAIXO" if ultimo_close < vwap_d else "ACIMA" if vwap_d > 0 else "DISTANTE"
+    pos_ema20 = "ABAIXO" if ultimo_close < ema20 else "ACIMA" if ema20 > 0 else "DISTANTE"
+
+    system_instruction = f"""
+    Você é um Engenheiro Quantitativo Sênior e Trader Institucional operando MetaTrader 5.
+    Sua tarefa é fazer uma leitura COMPLETA, DINÂMICA e EFICIENTE do Price Action na imagem.
+    
+    🚨 FATOS MATEMÁTICOS REAIS (VERDADE ABSOLUTA):
+    - O preço atual está {pos_vwap} da VWAP Diária.
+    - O preço atual está {pos_ema20} da EMA 20.
+    
+    Regras de Ouro Profissionais:
+    1. ANALISE TODOS OS CENÁRIOS: Identifique claramente se o mercado está em Rompimento (Breakout), Pullback (Retração), Tendência Clara, Consolidação (Range) ou Exaustão/Reversão. Não foque apenas em rejeições.
+    2. NÃO repita frases feitas ou genéricas. Seja dinâmico. Descreva com exatidão inteligente o que a estrutura dos candles está demonstrando neste momento exato.
+    3. Nunca contradiga os fatos matemáticos apresentados acima. Baseie suas descrições no alinhamento visual com esses fatos.
+    4. Deixe o cálculo exato numérico de Entrada/Stop/Alvo zerados (o sistema principal preencherá).
+    5. NUNCA use acentos nas suas respostas.
     
     Responda EXATAMENTE neste formato JSON:
-    {
+    {{
       "sinal": "COMPRA", // VENDA ou SEM SINAL CLARO
-      "tipo_cenario": "EXAUSTAO DE TOPO", 
+      "tipo_cenario": "PULLBACK NA MEDIA", // Adapte dinamicamente para o que estiver ocorrendo (Ex: ROMPIMENTO, RANGE, etc)
       "confianca": "85%",
-      "vies": "Reversao Baixista",
-      "modo_operacional": "Scalp de Retorno",
+      "vies": "Estrutura de Alta",
+      "modo_operacional": "A Favor da Tendencia",
       "mercado_status": "Alta Atividade",
       "qualidade_volume": "Forte",
       "confirmacao_volume": "Volume Apoia",
-      "comentario_l1": "[ GATILHO ] Preco esticado e rejeicao no topo",
-      "contexto_l1": "[ INFO ] Resposta a pergunta do usuario" 
-    }
+      "comentario_l1": "[ GATILHO ] Descreva aqui o gatilho visual de forma inteligente e unica",
+      "contexto_l1": "[ INFO ] Descreva o contexto do mercado fluindo sem frases engessadas" 
+    }}
     """
 
     prompt_usuario = f"""
-    Dados Técnicos:
-    {json.dumps(metadata, indent=2)}
-
-    Pergunta: '{pergunta}'
+    Pergunta do Cliente: '{pergunta}'
     """
 
     try:
@@ -293,7 +290,6 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
         resultado_ia = json.loads(resposta_texto)
         sinal = resultado_ia.get("sinal", "SEM SINAL CLARO")
         
-        # MÁGICA: Python assume o controle e faz o cálculo EXATO do Bid/Ask e níveis
         if sinal in ["COMPRA", "VENDA"]:
             p_entrada = preco_ref_buy if sinal == "COMPRA" else preco_ref_sell
             niveis = calcular_stop_alvo_dinamico(
@@ -304,8 +300,6 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
             resultado_ia["entrada"] = format_price(niveis["entrada"], digits)
             resultado_ia["stop"] = format_price(niveis["stop"], digits)
             resultado_ia["alvo"] = format_price(niveis["alvo"], digits)
-            
-            # Adiciona L2 e L3 formatados pela precisão matemática
             resultado_ia["comentario_l2"] = f"[ STOP ] {niveis['stop_razao']}"
             resultado_ia["comentario_l3"] = f"[ ALVO ] {niveis['alvo_razao']}"
             
@@ -331,7 +325,7 @@ def analisar_motor_gemini(metadata: Dict[str, Any], pergunta: str, chart_image: 
 # ===================================================================
 @app.get("/")
 async def home():
-    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.4"}
+    return {"status": "online", "servico": "oracle_mt5_bridge", "versao": "4.6"}
 
 @app.get("/health")
 async def health():
@@ -349,7 +343,6 @@ async def analisar_mt5_completo(
         chart_image = Image.open(io.BytesIO(image_bytes))
         metadata = json.loads(metadata_json)
         
-        # Despachante Híbrido
         if motor == "gemini" and api_key:
             return analisar_motor_gemini(metadata, pergunta or "", chart_image)
         else:
